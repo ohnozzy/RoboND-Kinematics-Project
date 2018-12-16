@@ -1,6 +1,7 @@
 from sympy import *
 from time import time
 from mpmath import radians
+from mpmath import hypot
 import tf
 
 '''
@@ -25,6 +26,8 @@ test_cases = {1:[[[2.16135,-1.42635,1.55109],
               4:[],
               5:[]}
 
+def calculate_angle(a, b, c):
+    return acos((b*b+c*c-a*a)/(2*b*c))
 
 def test_code(test_case):
     ## Set up code
@@ -64,28 +67,133 @@ def test_code(test_case):
 
     ## Insert IK code here!
     
-    theta1 = 0
-    theta2 = 0
-    theta3 = 0
-    theta4 = 0
-    theta5 = 0
-    theta6 = 0
+    roll, pitch, yaw = tf.transformations.euler_from_quaternion(
+                   [orientation.x, orientation.y,
+                    orientation.z, orientation.w])
+
+    px = req.poses[x].position.x
+    py = req.poses[x].position.y
+    pz = req.poses[x].position.z
+            
+    
+    
+
+    d = symbols("d0:8")
+    a = symbols("a0:7")
+    alpha = symbols("alpha0:7") 
+    q = symbols("q0:8")
+	# Create Modified DH parameters
+    s = {
+            alpha[0]: 0,    a[0]: 0        , d[1]: 0.75, 
+            alpha[1]: -pi/2, a[1]: 0.35     , d[2]: 0,  q[2]: q[2] - pi/2,
+            alpha[2]: 0,    a[2]: 1.25     , d[3]: 0,
+            alpha[3]: -pi/2, a[3]: -0.054   , d[4]: 1.5,
+            alpha[4]: pi/2, a[4]: 0        , d[5]: 0,
+            alpha[5]: -pi/2, a[5]: 0        , d[6]: 0,
+            alpha[6]: 0   , a[6]: 0        , d[7]: 0.303, q[7]: 0
+    }
+	# Define Modified DH Transformation matrix
+    T=[]
+    for i in range(1, 8):
+          qi = q[i]
+          ai = a[i-1]
+          alphai = alpha[i-1]
+          di = d[i]
+          T.append(Matrix([
+           [            cos(qi),            -sin(qi),            0,              ai],
+           [sin(qi)*cos(alphai), cos(qi)*cos(alphai), -sin(alphai), -sin(alphai)*di],
+           [sin(qi)*sin(alphai), cos(qi)*sin(alphai), cos(alphai), cos(alphai)*di],
+           [                  0,                   0,            0,               1] 
+          ]).subs(s))
+    T0=T[0]
+    for i in range(1, len(T)):
+          T0 = simplify(T0 * T[i])
+        
+    R_z = Matrix([
+           [ cos(pi), -sin(pi), 0, 0],
+           [ sin(pi),  cos(pi), 0, 0],
+           [       0,        0, 1, 0],
+           [       0,        0, 0, 1] 
+          ])
+    R_y = Matrix([
+           [ cos(pi/2.),0,-sin(pi/2.),0],
+           [         0,1,         0,0],
+           [ sin(pi/2.),0, cos(pi/2.),0],
+           [         0,0,         0,1]
+          ])
+    R_cor = simplify(R_z * R_y)
+    T_total = simplify(T0 * R_cor)
+
+    print("Start IK")
+    r, p, y = symbols('r p y')
+    ROT_x = Matrix([[1,          0,       0],
+                    [0,     cos(r), -sin(r)],
+                    [0,     sin(r),  cos(r)]])
+
+    ROT_y = Matrix([[cos(p),     0,  sin(p)],
+                            [0,          1,       0],
+                            [-sin(p),    0,  cos(p)]])
+            
+    ROT_z = Matrix([[cos(y), -sin(y),     0],
+                            [sin(y),  cos(y),     0],
+                            [0,            0,     1]])
+            
+    ROT_EE = ROT_z * ROT_y * ROT_x
+
+    Rot_Error = ROT_z.subs(y, radians(180)) * ROT_y.subs(p, radians(-90))
+    ROT_EE = ROT_EE * Rot_Error
+    ROT_EE = ROT_EE.subs({'r': roll, 'p': pitch, 'y': yaw})
+            
+    EE = Matrix([[px],[py],[pz]])
+    WC = EE - 0.303 * ROT_EE[:,2]
+	    #
+	    # Calculate joint angles using Geometric IK method
+	    #
+	    #
+            ###
+    theta1 = atan2(WC[1], WC[0])
+    print("theta1")   
+    side_a = 1.501
+    translate_xy = hypot(WC[0], WC[1]) - 0.35
+    translate_z  = WC[2] - 0.75
+            
+    side_b = hypot(translate_xy, translate_z)
+    side_c = 1.25
+            
+             
+    angle_a = calculate_angle(side_a, side_b, side_c)
+    angle_b = calculate_angle(side_b, side_a, side_c)
+    angle_c = calculate_angle(side_c, side_a, side_b)
+
+    theta2 = pi / 2 - angle_a - atan2(translate_z, translate_xy)
+    theta3 = pi / 2 - angle_b - 0.036
+    print("theta2-3")        
+    R0_3_analysis = T[0][0:3, 0:3]*T[1][0:3, 0:3]*T[2][0:3, 0:3]
+    R0_3 = R0_3_analysis.evalf(subs={q[1]: theta1, q[2]: theta2, q[3]: theta3})
+    R3_6 = R0_3.inv("LU")*ROT_EE
+
+    theta4 = atan2(R3_6[2,2], -R3_6[0,2])
+    theta5 = atan2(hypot(R3_6[0,2],R3_6[2,2]),R3_6[1,2])
+    theta6 = atan2(-R3_6[1,1], R3_6[1,0])
+    print("theta4-6")        
+            # Populate response for the IK request
+            # In the next line replace theta1,theta2...,theta6 by your joint angle variables
+    #joint_trajectory_point.positions = [theta1, theta2, theta3, theta4, theta5,theta6]    
+
 
     ## 
     ########################################################################################
-    
     ########################################################################################
     ## For additional debugging add your forward kinematics here. Use your previously calculated thetas
     ## as the input and output the position of your end effector as your_ee = [x,y,z]
-
-    ## (OPTIONAL) YOUR CODE HERE!
+    theta_map = {q[1]: test_case[2][0], q[2]: test_case[2][1], q[3]: test_case[2][2], q[4]:test_case[2][3] ,q[5]:test_case[2][4], q[6]:test_case[2][5]} 
 
     ## End your code input for forward kinematics here!
     ########################################################################################
 
     ## For error analysis please set the following variables of your WC location and EE location in the format of [x,y,z]
     your_wc = [1,1,1] # <--- Load your calculated WC values in this array
-    your_ee = [1,1,1] # <--- Load your calculated end effector value from your forward kinematics
+    your_ee = T_total.subs(theta_map).col(-1) # <--- Load your calculated end effector value from your forward kinematics
     ########################################################################################
 
     ## Error analysis
